@@ -1,8 +1,11 @@
 // content.js — DOM automation + markdown reconstruction for oxalpha.com.
-// - Rebuilds markdown from DOM (innerText flattens newlines).
-// - Detects verification / waiting states; pauses the reply timeout.
-// - Detects oxalpha's "temporary problem" placeholder and auto-retries once.
-// - Best-effort image attach with verification that a preview appeared.
+//
+// Image attach strategy (based on oxalpha's real DOM):
+//   - One hidden <input type="file"> inside <label class="ox-attach">.
+//   - Accepts images + code files, multiple.
+//   - Upload is asynchronous: a preview appears immediately, but the file keeps
+//     uploading; submitting too early drops the attachment.
+//   - We now wait for: preview appears -> no spinner -> send enabled -> settle.
 
 (function () {
   if (window.__MYBEAM_CONTENT_LOADED__) {
@@ -20,6 +23,7 @@
   function findSendButton() { return document.querySelector('button.send-btn') || document.querySelector('button[title="Send"]'); }
   function findAssistantMessages() { return Array.from(document.querySelectorAll('.msg.msg-assistant')); }
   function pageLooksReady() { return !!findComposer(); }
+  function findFileInput() { return document.querySelector('label.ox-attach input[type="file"], input[type="file"]'); }
 
   // ---------- verification ----------
   function pageHasVerification() {
@@ -54,7 +58,6 @@
     return false;
   }
 
-  // oxalpha's provider hiccup text — this is retryable.
   function isRetryableProviderError(s) {
     const t = (s || '').replace(/\s+/g, ' ').trim();
     if (!t) return false;
@@ -87,6 +90,11 @@
     if (tag === 'code') { const c = String.fromCharCode(96); return c + inner + c; }
     if (tag === 'a') { const href = node.getAttribute('href') || ''; return '[' + inner + '](' + href + ')'; }
     if (tag === 'br') return '\n';
+    if (tag === 'img') {
+      const src = node.getAttribute('src') || '';
+      const alt = node.getAttribute('alt') || 'image';
+      if (src) return '![' + alt + '](' + src + ')';
+    }
     return inner;
   }
 
@@ -177,12 +185,40 @@
     } catch (e) { return null; }
   }
 
-  // Count how many image-ish previews exist in the input area — used to verify attach worked.
   function countComposerImagePreviews() {
     const area = document.querySelector('.input-area, .input-col') || document.body;
     if (!area) return 0;
-    // Images inside the input area that are not part of the message list.
     return area.querySelectorAll('img, [style*="background-image"]').length;
+  }
+
+  // Look for spinners / loading indicators inside the input area. When these
+  // vanish, oxalpha has finished uploading.
+  function composerHasSpinner() {
+    const area = document.querySelector('.input-area, .input-col');
+    if (!area) return false;
+    // Common spinner patterns.
+    if (area.querySelector('[class*="spinner"], [class*="loading"], [class*="progress"], [aria-busy="true"]')) return true;
+    // Some apps hide a spinner as an animated SVG.
+    const animated = area.querySelectorAll('svg [class*="spin"], svg[class*="spin"]');
+    if (animated.length) return true;
+    return false;
+  }
+
+  // Wait until the composer looks settled: preview exists, no spinner, and the
+  // send button (if visible) is enabled. Returns { ok, reason }.
+  async function waitForUploadSettled(timeoutMs = 8000) {
+    const start = Date.now();
+    let lastState = '';
+    while (Date.now() - start < timeoutMs) {
+      const spinner = composerHasSpinner();
+      const send = findSendButton();
+      const sendReady = !send || !send.disabled;
+      const state = (spinner ? 'spin' : 'idle') + '|' + (sendReady ? 'send' : 'wait');
+      if (state !== lastState) { LOG('upload state:', state); lastState = state; }
+      if (!spinner && sendReady) return { ok: true };
+      await sleep(150);
+    }
+    return { ok: false, reason: 'upload-not-settled' };
   }
 
   async function attachImages(images) {
@@ -191,67 +227,39 @@
     images.forEach((img, i) => { const f = dataUrlToFile(img.dataUrl, img.name || ('paste-' + i + '.png')); if (f) files.push(f); });
     if (!files.length) return { ok: false, reason: 'decode-failed' };
 
+    const input = findFileInput();
+    if (!input) return { ok: false, reason: 'no-file-input' };
+
     const beforeCount = countComposerImagePreviews();
 
-    // 1) file input present?
-    let input = document.querySelector('input[type="file"]');
-    let revealedInput = false;
-    if (!input) {
-      const candidates = Array.from(document.querySelectorAll('button, [role="button"]'));
-      for (const b of candidates) {
-        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-        const title = (b.getAttribute('title') || '').toLowerCase();
-        const cls = (b.className && b.className.toString) ? b.className.toString().toLowerCase() : '';
-        if (/attach|upload|image|file|photo|paperclip/.test(aria + ' ' + title + ' ' + cls)) {
-          try { b.click(); } catch (_) {}
-          await sleep(280);
-          input = document.querySelector('input[type="file"]');
-          if (input) { revealedInput = true; break; }
-        }
-      }
+    try {
+      const dt = new DataTransfer();
+      files.forEach((f) => dt.items.add(f));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch (e) {
+      LOG('file input attach failed', String(e));
+      return { ok: false, reason: 'set-files-failed' };
     }
 
-    let attached = false;
-    if (input) {
-      try {
-        const dt = new DataTransfer();
-        files.forEach((f) => dt.items.add(f));
-        input.files = dt.files;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        // Wait and check whether a preview appeared.
-        for (let i = 0; i < 10; i++) {
-          await sleep(150);
-          if (countComposerImagePreviews() > beforeCount) { attached = true; break; }
-        }
-        if (!attached) { LOG('file input set but no preview appeared'); attached = countComposerImagePreviews() > beforeCount; }
-        else LOG('attached via file input');
-      } catch (e) { LOG('file input attach failed', String(e)); }
+    // 1) Wait for a preview to appear (up to 3s).
+    let previewed = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(150);
+      if (countComposerImagePreviews() > beforeCount) { previewed = true; break; }
     }
+    if (!previewed) { LOG('no preview appeared after attach'); return { ok: false, reason: 'no-preview-detected' }; }
+    LOG('preview appeared, waiting for upload to settle…');
 
-    if (!attached) {
-      try {
-        const dropTarget = document.querySelector('.input-area, .input-col, form, textarea') || document.body;
-        const dt = new DataTransfer();
-        files.forEach((f) => dt.items.add(f));
-        ['dragenter','dragover','drop'].forEach((evt) => {
-          const ev = new DragEvent(evt, { bubbles: true, cancelable: true, dataTransfer: dt });
-          try { dropTarget.dispatchEvent(ev); } catch (_) {}
-        });
-        for (let i = 0; i < 10; i++) {
-          await sleep(150);
-          if (countComposerImagePreviews() > beforeCount) { attached = true; break; }
-        }
-        if (attached) LOG('attached via drop event');
-        else LOG('drop event dispatched but no preview appeared');
-      } catch (e) { LOG('drop attach failed', String(e)); }
-    }
+    // 2) Wait for the upload to actually finish (no spinner + send enabled).
+    const settled = await waitForUploadSettled(8000);
+    if (!settled.ok) { LOG('upload did not settle:', settled.reason); return { ok: false, reason: settled.reason }; }
 
-    // Clean up an input we revealed via a fake click.
-    if (revealedInput && !attached) {
-      try { document.body.click(); } catch (_) {}
-    }
-    return { ok: attached, reason: attached ? 'ok' : 'no-preview-detected' };
+    // 3) Extra settle beat.
+    await sleep(500);
+    LOG('attached and settled');
+    return { ok: true, reason: 'ok' };
   }
 
   // ---------- typing / submit ----------
@@ -273,7 +281,7 @@
     return el;
   }
 
-  async function waitForSendEnabled(timeoutMs = 2500) {
+  async function waitForSendEnabled(timeoutMs = 4000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const btn = findSendButton();
@@ -284,7 +292,7 @@
   }
 
   async function submitComposer(el) {
-    const btn = await waitForSendEnabled(2500);
+    const btn = await waitForSendEnabled(4000);
     if (btn) {
       btn.click();
       await sleep(280);
@@ -310,7 +318,6 @@
   function emitStream(taskId, text) { try { chrome.runtime.sendMessage({ type: 'MYBEAM_STREAM', taskId, text }); } catch (_) {} }
   function emitVerify(taskId, on) { try { chrome.runtime.sendMessage({ type: 'MYBEAM_VERIFY', taskId, on: !!on }); } catch (_) {} }
 
-  // Returns { reply, retryable } — retryable=true if the placeholder was a provider error we should resend.
   async function streamReply(prevCount, taskId, { stableMs = 1000, maxTimeoutMs = 240000, safetyMs = 80 } = {}) {
     const start = Date.now();
     let bubble = null;
@@ -342,10 +349,7 @@
         if (!latest) return;
         const text = messageToMarkdown(latest);
         if (!text || isPlaceholderText(text)) return;
-        if (isRetryableProviderError(text)) {
-          retryable = true;
-          // Treat as stable if unchanged for a short beat, then finish with retryable=true.
-        }
+        if (isRetryableProviderError(text)) retryable = true;
         sawRealContent = true;
         if (text !== lastText) { lastText = text; lastChangeAt = Date.now(); emitStream(taskId, text); }
       };
@@ -380,7 +384,6 @@
   let busy = false;
   function reportState() { try { chrome.runtime.sendMessage({ type: 'MYBEAM_STATE', connected: pageLooksReady(), busy }); } catch (_) {} }
 
-  // Send one attempt; returns { ok, reply, error, retryable, attachFailed }.
   async function attemptOnce(task) {
     const prevCount = findAssistantMessages().length;
     let attachFailed = false;
@@ -405,7 +408,6 @@
     reportState();
     try {
       let r = await attemptOnce(task);
-      // Auto-retry once if the provider placeholder came back.
       if (r.retryable) {
         LOG('detected retryable provider error, retrying once…');
         try { chrome.runtime.sendMessage({ type: 'MYBEAM_STREAM', taskId, text: '' }); } catch (_) {}
