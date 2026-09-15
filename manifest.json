@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "MyBeam",
+  "version": "1.0.3",
+  "description": "Bridges oxalpha.com DOM to local MyBeam Workstation server.",
+  "permissions": [
+    "alarms",
+    "tabs",
+    "windows",
+    "storage",
+    "offscreen",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost:3210/*",
+    "https://oxalpha.com/*",
+    "https://*.oxalpha.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://oxalpha.com/*",
+        "https://*.oxalpha.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "MyBeam"
+  }
+}
