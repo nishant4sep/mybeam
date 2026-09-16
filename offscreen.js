@@ -1,11 +1,10 @@
-// offscreen.js — polling + streaming relay to local MyBeam server.
-// Also relays verification state so the UI can show "Waiting for verification".
+// offscreen.js — polling + streaming relay + cancel relay.
 
 const SERVER = 'http://localhost:3210';
 const POLL_MS = 1000;
 const HEARTBEAT_MS = 4000;
 const REQUEST_TIMEOUT_MS = 30000;
-const DOM_TASK_TIMEOUT_MS = 900000; // 15 min: verification can take a while
+const DOM_TASK_TIMEOUT_MS = 900000;
 const STREAM_FLUSH_MS = 33;
 
 let domReady = false;
@@ -13,6 +12,7 @@ let domBusy = false;
 let inFlight = false;
 let currentTaskId = null;
 let verifying = false;
+let currentProvider = null;
 
 let streamId = null;
 let streamText = '';
@@ -48,11 +48,7 @@ function sendToBackground(msg, timeoutMs) {
         if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
         else resolve(resp || { ok: false, error: 'no-response' });
       });
-    } catch (e) {
-      if (done) return;
-      done = true; clearTimeout(t);
-      resolve({ ok: false, error: String(e && e.message || e) });
-    }
+    } catch (e) { if (done) return; done = true; clearTimeout(t); resolve({ ok: false, error: String(e && e.message || e) }); }
   });
 }
 
@@ -60,39 +56,15 @@ function flushStream() {
   streamTimer = null;
   if (!streamId || !streamText) return;
   if (streamInFlight) { scheduleFlush(); return; }
-  const id = streamId;
-  const text = streamText;
+  const id = streamId; const text = streamText;
   streamInFlight = true;
   fetch(`${SERVER}/stream`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    keepalive: true,
+    method: 'POST', headers: { 'content-type': 'application/json' }, keepalive: true,
     body: JSON.stringify({ id, text })
-  }).catch(() => {}).finally(() => {
-    streamInFlight = false;
-    if (streamText !== text) scheduleFlush();
-  });
+  }).catch(() => {}).finally(() => { streamInFlight = false; if (streamText !== text) scheduleFlush(); });
 }
-
-function scheduleFlush() {
-  if (streamTimer != null) return;
-  streamTimer = setTimeout(flushStream, STREAM_FLUSH_MS);
-}
-
-function queueStream(taskId, text) {
-  if (taskId !== streamId) { streamId = taskId; streamText = ''; }
-  streamText = text || '';
-  scheduleFlush();
-}
-
-async function postVerify(taskId, on) {
-  try {
-    await fetchWithTimeout(`${SERVER}/verify`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: taskId, on: !!on })
-    }, 5000);
-  } catch (_) {}
-}
+function scheduleFlush() { if (streamTimer != null) return; streamTimer = setTimeout(flushStream, STREAM_FLUSH_MS); }
+function queueStream(taskId, text) { if (taskId !== streamId) { streamId = taskId; streamText = ''; } streamText = text || ''; scheduleFlush(); }
 
 async function pollWork() {
   if (inFlight) return;
@@ -104,14 +76,11 @@ async function pollWork() {
     const task = await res.json().catch(() => null);
     if (!task || !task.id || !task.text) return;
 
-    currentTaskId = task.id;
-    streamId = task.id;
-    streamText = '';
-    verifying = false;
-    log('dispatching task', task.id);
+    currentTaskId = task.id; streamId = task.id; streamText = ''; verifying = false;
+    currentProvider = task.provider || null;
+    log('dispatching task', task.id, 'provider', currentProvider);
     const result = await sendToBackground({ type: 'MYBEAM_DOM_TASK', task }, DOM_TASK_TIMEOUT_MS);
-    currentTaskId = null;
-    verifying = false;
+    currentTaskId = null; verifying = false; currentProvider = null;
     log('task result', task.id, result.ok ? 'ok' : result.error);
 
     await fetchWithTimeout(`${SERVER}/result`, {
@@ -119,26 +88,18 @@ async function pollWork() {
       body: JSON.stringify({ id: task.id, ok: !!result.ok, reply: result.reply || null, error: result.error || null })
     }, 10000).catch(() => {});
 
-    streamId = null;
-    streamText = '';
+    streamId = null; streamText = '';
   } catch (_) {
-  } finally {
-    inFlight = false;
-  }
+  } finally { inFlight = false; }
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg || typeof msg !== 'object') return;
-  if (msg.type === 'MYBEAM_STATE') { domReady = !!msg.connected; domBusy = !!msg.busy; }
+  if (msg.type === 'MYBEAM_STATE') { domReady = !!msg.connected; domBusy = !!msg.busy; if (msg.provider) currentProvider = msg.provider; }
   else if (msg.type === 'MYBEAM_STREAM' && msg.taskId) { queueStream(msg.taskId, msg.text || ''); }
-  else if (msg.type === 'MYBEAM_VERIFY' && msg.taskId) {
-    const wasOn = verifying;
-    verifying = !!msg.on;
-    if (wasOn !== verifying) postVerify(msg.taskId, verifying);
-  }
 });
 
-setInterval(() => beat({ ready: domReady, busy: domBusy, task: currentTaskId, verifying }), HEARTBEAT_MS);
+setInterval(() => beat({ ready: domReady, busy: domBusy, task: currentTaskId, verifying, provider: currentProvider }), HEARTBEAT_MS);
 
 (function loop() { pollWork().finally(() => setTimeout(loop, POLL_MS)); })();
 

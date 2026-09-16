@@ -11,135 +11,79 @@
 <link rel="stylesheet" href="/ui/style.css" />
 </head>
 <body>
-<div class="app">
+<div class="app sidebar-collapsed" id="app-root">
   <aside id="sidebar" class="sidebar">
-    <!-- Workspace bar -->
+    <div class="sidebar-topbar">
+      <button id="sidebar-hide" class="sidebar-hide" type="button" title="Hide sidebar" aria-label="Hide sidebar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"></polyline></svg>
+      </button>
+      <span class="sidebar-topbar-title">MyBeam</span>
+    </div>
     <div id="ws-bar" class="ws-bar">
       <button id="ws-open" class="ws-btn ws-open" type="button" title="Open folder as workspace">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path></svg>
         <span>Open folder…</span>
       </button>
       <div id="ws-current" class="ws-current" hidden>
-        <div class="ws-info" id="ws-info" title="">
-          <div class="ws-name" id="ws-name">workspace</div>
-          <div class="ws-path" id="ws-path"></div>
-        </div>
-        <button id="ws-change" class="ws-icon-btn" type="button" title="Change workspace">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 9 3 21 21 21 21 9"></polyline><polyline points="3 9 12 2 21 9"></polyline></svg>
-        </button>
-        <button id="ws-close" class="ws-icon-btn ws-close" type="button" title="Close workspace">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg>
-        </button>
+        <div class="ws-info" id="ws-info"><div class="ws-name" id="ws-name">workspace</div><div class="ws-path" id="ws-path"></div></div>
+        <button id="ws-change" class="ws-icon-btn" type="button" title="Change workspace"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 9 3 21 21 21 21 9"></polyline><polyline points="3 9 12 2 21 9"></polyline></svg></button>
+        <button id="ws-close" class="ws-icon-btn ws-close" type="button" title="Close workspace"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg></button>
       </div>
     </div>
-
-    <!-- Chats section -->
     <div class="side-section side-chats">
-      <div class="side-head">
-        <span>Chats</span>
-        <button id="new-chat" class="side-add" type="button" title="New chat" aria-label="New chat">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-        </button>
-      </div>
+      <div class="side-head"><span>Chats</span><button id="new-chat" class="side-add" type="button" title="New chat" aria-label="New chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></button></div>
       <div id="session-list" class="session-list"></div>
     </div>
-
-    <!-- Files section (hidden until a workspace exists) -->
     <div id="files-section" class="side-section side-files" hidden>
-      <div class="side-head">
-        <span>Files</span>
-        <button id="files-refresh" class="side-add" type="button" title="Refresh tree" aria-label="Refresh tree">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"></path></svg>
-        </button>
-      </div>
+      <div class="side-head"><span>Files</span><button id="files-refresh" class="side-add" type="button" title="Refresh tree" aria-label="Refresh tree"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"></path></svg></button></div>
       <div id="file-tree" class="file-tree"></div>
     </div>
-
-    <div class="sidebar-foot">
-      <span class="brand-mark-mini">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h6M14 12h6M12 4v6M12 14v6"/></svg>
-      </span>
-      <span>MyBeam</span>
+    <div id="memory-section" class="side-section side-memory" hidden>
+      <div class="side-head"><span>Memory</span><button id="memory-refresh" class="side-add" type="button" title="Refresh memory" aria-label="Refresh memory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"></path></svg></button></div>
+      <div id="memory-body" class="memory-body"></div>
     </div>
+    <div class="sidebar-foot"><span class="brand-mark-mini"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h6M14 12h6M12 4v6M12 14v6"/></svg></span><span>MyBeam</span></div>
   </aside>
-
   <div class="main-col">
     <header>
-      <button id="sidebar-toggle" class="icon-btn" type="button" title="Toggle sidebar" aria-label="Toggle sidebar">
-        <svg id="sidebar-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="9" y1="4" x2="9" y2="20"></line></svg>
-      </button>
-
-      <div class="brand">
-        <div class="brand-mark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h6M14 12h6M12 4v6M12 14v6"/></svg>
+      <button id="sidebar-toggle" class="icon-btn" type="button" title="Toggle sidebar" aria-label="Toggle sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="9" y1="4" x2="9" y2="20"></line></svg></button>
+      <div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h6M14 12h6M12 4v6M12 14v6"/></svg></div><span class="brand-name">MyBeam</span><span class="brand-sub">Workstation</span></div>
+      <div class="header-controls">
+        <div class="provider-picker">
+          <button id="provider-btn" class="provider-btn" type="button" title="Switch provider"><span id="provider-label">Ox Alpha</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg></button>
+          <div id="provider-menu" class="provider-menu" hidden></div>
         </div>
-        <span class="brand-name">MyBeam</span><span class="brand-sub">Workstation</span>
+        <div class="perm-picker">
+          <button id="perm-btn" class="perm-btn" type="button" title="Permission mode"><span id="perm-label">Ask</span></button>
+        </div>
       </div>
-
       <div class="spacer"></div>
       <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting</span><span id="statusMeta" class="meta"></span></div>
       <button id="clear" class="btn-quiet" type="button">Clear</button>
     </header>
-
     <main>
       <div id="feed">
-        <div class="empty" id="empty">
-          <div>
-            <h1>Ready when you are.</h1>
-            <p>Type or paste images to send them with your message.</p>
-          </div>
-        </div>
+        <div class="empty" id="empty"><div><h1>Ready when you are.</h1><p>Type or paste images to send them with your message.</p></div></div>
       </div>
-
       <div class="composer-wrap">
         <form id="f" class="composer" autocomplete="off">
           <div id="paste-strip" class="paste-strip"></div>
           <div class="composer-row">
             <textarea id="q" rows="1" placeholder="Message or paste an image…"></textarea>
-            <button id="send" class="send" type="submit" title="Send" aria-label="Send">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
-            </button>
+            <button id="stop" class="stop" type="button" title="Stop" aria-label="Stop" hidden><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg></button>
+            <button id="send" class="send" type="submit" title="Send" aria-label="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg></button>
           </div>
         </form>
         <div class="hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line · Paste images with <kbd>Ctrl</kbd>+<kbd>V</kbd></div>
       </div>
     </main>
   </div>
-
-  <!-- File preview pane -->
   <div id="file-pane" class="file-pane" hidden>
-    <div class="file-pane-head">
-      <div class="file-pane-title">
-        <span id="file-pane-name">file</span>
-        <span id="file-pane-meta" class="file-pane-meta"></span>
-      </div>
-      <div class="file-pane-actions">
-        <button id="file-pane-copy" class="icon-btn" type="button" title="Copy contents">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg>
-        </button>
-        <button id="file-pane-close" class="icon-btn" type="button" title="Close">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg>
-        </button>
-      </div>
-    </div>
-    <div class="file-pane-body">
-      <div class="cb cb-full">
-        <div class="cb-head">
-          <div class="cb-dots"><i></i><i></i><i></i></div>
-          <span class="cb-lang" id="file-pane-lang">code</span>
-          <div class="cb-spacer"></div>
-        </div>
-        <div class="cb-body cb-body-full">
-          <div class="cb-gutter" id="file-pane-gutter"></div>
-          <pre class="cb-code" id="file-pane-code"></pre>
-        </div>
-      </div>
-    </div>
+    <div class="file-pane-head"><div class="file-pane-title"><span id="file-pane-name">file</span><span id="file-pane-meta" class="file-pane-meta"></span></div><div class="file-pane-actions"><button id="file-pane-copy" class="icon-btn" type="button" title="Copy contents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg></button><button id="file-pane-close" class="icon-btn" type="button" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg></button></div></div>
+    <div class="file-pane-body"><div class="cb cb-full"><div class="cb-head"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-lang" id="file-pane-lang">code</span><div class="cb-spacer"></div></div><div class="cb-body cb-body-full"><div class="cb-gutter" id="file-pane-gutter"></div><pre class="cb-code" id="file-pane-code"></pre></div></div></div>
   </div>
 </div>
-
 <div id="toast" class="toast"></div>
-
 <script src="/ui/app.js"></script>
 </body>
 </html>
