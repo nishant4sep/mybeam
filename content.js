@@ -1,11 +1,6 @@
 // content.js — DOM automation + markdown reconstruction for oxalpha.com.
-//
-// Image attach strategy (based on oxalpha's real DOM):
-//   - One hidden <input type="file"> inside <label class="ox-attach">.
-//   - Accepts images + code files, multiple.
-//   - Upload is asynchronous: a preview appears immediately, but the file keeps
-//     uploading; submitting too early drops the attachment.
-//   - We now wait for: preview appears -> no spinner -> send enabled -> settle.
+// Also handles fresh-context sessions: when a task arrives with freshContext=true,
+// we click oxalpha's "New Chat" button before typing, so the model starts clean.
 
 (function () {
   if (window.__MYBEAM_CONTENT_LOADED__) {
@@ -22,8 +17,14 @@
   function findComposer() { return document.querySelector('textarea[placeholder="Send a message..."]') || document.querySelector('textarea'); }
   function findSendButton() { return document.querySelector('button.send-btn') || document.querySelector('button[title="Send"]'); }
   function findAssistantMessages() { return Array.from(document.querySelectorAll('.msg.msg-assistant')); }
+  function findAllMessages() { return Array.from(document.querySelectorAll('.msg')); }
   function pageLooksReady() { return !!findComposer(); }
   function findFileInput() { return document.querySelector('label.ox-attach input[type="file"], input[type="file"]'); }
+  function findNewChatButton() {
+    return document.querySelector('button.new-chat-btn')
+        || document.querySelector('button[title*="New Chat" i]')
+        || document.querySelector('button[aria-label*="New Chat" i]');
+  }
 
   // ---------- verification ----------
   function pageHasVerification() {
@@ -42,7 +43,6 @@
     return composerGone && (textHits || widget);
   }
 
-  // ---------- placeholder / retryable detection ----------
   function isPlaceholderText(s) {
     const t = (s || '').replace(/\s+/g, ' ').trim();
     if (!t) return true;
@@ -90,11 +90,7 @@
     if (tag === 'code') { const c = String.fromCharCode(96); return c + inner + c; }
     if (tag === 'a') { const href = node.getAttribute('href') || ''; return '[' + inner + '](' + href + ')'; }
     if (tag === 'br') return '\n';
-    if (tag === 'img') {
-      const src = node.getAttribute('src') || '';
-      const alt = node.getAttribute('alt') || 'image';
-      if (src) return '![' + alt + '](' + src + ')';
-    }
+    if (tag === 'img') { const src = node.getAttribute('src') || ''; const alt = node.getAttribute('alt') || 'image'; if (src) return '![' + alt + '](' + src + ')'; }
     return inner;
   }
 
@@ -191,21 +187,15 @@
     return area.querySelectorAll('img, [style*="background-image"]').length;
   }
 
-  // Look for spinners / loading indicators inside the input area. When these
-  // vanish, oxalpha has finished uploading.
   function composerHasSpinner() {
     const area = document.querySelector('.input-area, .input-col');
     if (!area) return false;
-    // Common spinner patterns.
     if (area.querySelector('[class*="spinner"], [class*="loading"], [class*="progress"], [aria-busy="true"]')) return true;
-    // Some apps hide a spinner as an animated SVG.
     const animated = area.querySelectorAll('svg [class*="spin"], svg[class*="spin"]');
     if (animated.length) return true;
     return false;
   }
 
-  // Wait until the composer looks settled: preview exists, no spinner, and the
-  // send button (if visible) is enabled. Returns { ok, reason }.
   async function waitForUploadSettled(timeoutMs = 8000) {
     const start = Date.now();
     let lastState = '';
@@ -231,7 +221,6 @@
     if (!input) return { ok: false, reason: 'no-file-input' };
 
     const beforeCount = countComposerImagePreviews();
-
     try {
       const dt = new DataTransfer();
       files.forEach((f) => dt.items.add(f));
@@ -243,7 +232,6 @@
       return { ok: false, reason: 'set-files-failed' };
     }
 
-    // 1) Wait for a preview to appear (up to 3s).
     let previewed = false;
     for (let i = 0; i < 20; i++) {
       await sleep(150);
@@ -251,21 +239,35 @@
     }
     if (!previewed) { LOG('no preview appeared after attach'); return { ok: false, reason: 'no-preview-detected' }; }
     LOG('preview appeared, waiting for upload to settle…');
-
-    // 2) Wait for the upload to actually finish (no spinner + send enabled).
     const settled = await waitForUploadSettled(8000);
     if (!settled.ok) { LOG('upload did not settle:', settled.reason); return { ok: false, reason: settled.reason }; }
-
-    // 3) Extra settle beat.
     await sleep(500);
     LOG('attached and settled');
     return { ok: true, reason: 'ok' };
+  }
+
+  // ---------- fresh-context ----------
+  async function startFreshContext() {
+    const btn = findNewChatButton();
+    if (!btn) { LOG('fresh-context: no New Chat button found'); return false; }
+    const before = findAllMessages().length;
+    try { btn.click(); } catch (e) { LOG('fresh-context: click threw', String(e)); return false; }
+    // Wait for the message list to clear (up to 4s).
+    const start = Date.now();
+    while (Date.now() - start < 4000) {
+      await sleep(120);
+      const now = findAllMessages().length;
+      if (now < before || now === 0) { LOG('fresh-context: cleared'); return true; }
+    }
+    LOG('fresh-context: list did not clear, continuing anyway');
+    return true;
   }
 
   // ---------- typing / submit ----------
   async function typeIntoComposer(text) {
     const el = findComposer();
     if (!el) throw new Error('composer-not-found');
+    if (!text) { el.focus(); return el; }
     el.focus(); el.click();
     try { el.select && el.select(); } catch (_) {}
     try { document.execCommand('delete', false, null); } catch (_) {}
@@ -285,31 +287,42 @@
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const btn = findSendButton();
-      if (btn && !btn.disabled) return btn;
+      const ta = findComposer();
+      const hasText = ta && (ta.value || '').trim().length > 0;
+      const hasImages = countComposerImagePreviews() > 0;
+      if (btn && !btn.disabled && (hasText || hasImages)) return btn;
+      if (!btn && (hasText || hasImages)) return null;
       await sleep(80);
     }
     return null;
   }
 
   async function submitComposer(el) {
+    const ta0 = findComposer();
+    const hasText0 = ta0 && (ta0.value || '').trim().length > 0;
+    const hasImages0 = countComposerImagePreviews() > 0;
+
     const btn = await waitForSendEnabled(4000);
-    if (btn) {
+    if (btn && !btn.disabled) {
       btn.click();
-      await sleep(280);
+      await sleep(300);
       if (!findComposer()) return true;
       const ta = findComposer();
-      if (ta && !(ta.value || '').trim()) return true;
+      const emptyAfter = ta && !(ta.value || '').trim();
+      const imagesCleared = countComposerImagePreviews() === 0;
+      if (emptyAfter && (imagesCleared || !hasImages0)) return true;
     }
+
     const ta = findComposer();
-    if (ta) {
+    if (ta && (hasText0 || hasImages0)) {
       const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
       ta.dispatchEvent(new KeyboardEvent('keydown', opts));
       ta.dispatchEvent(new KeyboardEvent('keypress', opts));
       ta.dispatchEvent(new KeyboardEvent('keyup', opts));
-      await sleep(280);
+      await sleep(300);
       if (!findComposer()) return true;
       const ta2 = findComposer();
-      if (ta2 && !(ta2.value || '').trim()) return true;
+      if (ta2 && !(ta2.value || '').trim() && countComposerImagePreviews() === 0) return true;
     }
     return false;
   }
@@ -407,6 +420,10 @@
     busy = true;
     reportState();
     try {
+      // If this is the first task of a session, clear oxalpha's context first.
+      if (task && task.freshContext) {
+        try { await startFreshContext(); } catch (e) { LOG('fresh-context threw', String(e)); }
+      }
       let r = await attemptOnce(task);
       if (r.retryable) {
         LOG('detected retryable provider error, retrying once…');
