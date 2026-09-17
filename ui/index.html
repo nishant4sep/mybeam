@@ -26,6 +26,7 @@
       </button>
       <div id="ws-current" class="ws-current" hidden>
         <div class="ws-info" id="ws-info"><div class="ws-name" id="ws-name">workspace</div><div class="ws-path" id="ws-path"></div></div>
+        <button id="ws-map" class="ws-icon-btn" type="button" title="Generate project map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V9"></path><path d="M14 3h7v7"></path><path d="M21 3l-9 9"></path></svg></button>
         <button id="ws-change" class="ws-icon-btn" type="button" title="Change workspace"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 9 3 21 21 21 21 9"></polyline><polyline points="3 9 12 2 21 9"></polyline></svg></button>
         <button id="ws-close" class="ws-icon-btn ws-close" type="button" title="Close workspace"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg></button>
       </div>
@@ -79,6 +80,7 @@
     </main>
   </div>
   <div id="file-pane" class="file-pane" hidden>
+    <div id="file-pane-resize" class="file-pane-resize" title="Drag to resize"></div>
     <div class="file-pane-head"><div class="file-pane-title"><span id="file-pane-name">file</span><span id="file-pane-meta" class="file-pane-meta"></span></div><div class="file-pane-actions"><button id="file-pane-copy" class="icon-btn" type="button" title="Copy contents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg></button><button id="file-pane-close" class="icon-btn" type="button" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg></button></div></div>
     <div class="file-pane-body"><div class="cb cb-full"><div class="cb-head"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-lang" id="file-pane-lang">code</span><div class="cb-spacer"></div></div><div class="cb-body cb-body-full"><div class="cb-gutter" id="file-pane-gutter"></div><pre class="cb-code" id="file-pane-code"></pre></div></div></div>
   </div>

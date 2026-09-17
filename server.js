@@ -1,8 +1,6 @@
 // server.js — MyBeam Workstation
-// Changes:
-//  - Context block wrapped only on first user message of a session (or after idle).
-//  - Reply is passed through edits.stripForDisplay before broadcasting.
-//  - Existing edit-card rendering intact.
+// Adds: every assistant reply is passed through edits.cleanReplyText before
+// broadcast/display, so site-injected chrome doesn't leak into the feed.
 
 const http = require('http');
 const { URL } = require('url');
@@ -16,6 +14,7 @@ const edits = require('./lib/edits');
 const apply = require('./lib/apply');
 const cancel = require('./lib/cancel');
 const prompt = require('./lib/prompt');
+const projectmap = require('./lib/projectmap');
 const { pickFolder } = require('./lib/dialog');
 
 const PORT = 3210;
@@ -35,6 +34,8 @@ let permissionMode = 'ask';
 let lastHeartbeat = 0;
 let lastHeartbeatMeta = {};
 const listeners = new Set();
+
+let mapTaskId = null;
 
 function broadcast(event, data) { const payload = 'event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n'; for (const res of listeners) { try { res.write(payload); } catch (_) {} } }
 const streamBuf = new Map();
@@ -76,31 +77,31 @@ function createSession(title) { const id = String(nextSessionId++); const now = 
 function findEmptySession() { for (const s of sessions.values()) { if (s.tasks.length === 0) return s; } return null; }
 function ensureDefaultSession() { if (defaultSessionId && sessions.has(defaultSessionId)) return sessions.get(defaultSessionId); let s = findEmptySession(); if (!s) s = createSession('New chat'); defaultSessionId = s.id; return s; }
 
-function enqueueTask(text, images, sessionId) {
+function enqueueTask(text, images, sessionId, opts) {
+  opts = opts || {};
   const s = (sessionId && sessions.get(sessionId)) || ensureDefaultSession();
   const id = nextTaskId++;
   const imgs = Array.isArray(images) ? images.slice(0, 8) : [];
   const freshContext = s.tasks.length === 0;
   const active = provider.getActive();
   const wsActive = config.getActiveWorkspace();
-
-  // Wrap the context block only when this is the first user message of the
-  // session, or when the session has been idle for a long time.
-  const wrapIt = prompt.shouldWrap(s);
+  const wrapIt = opts.wrap === true ? true : (opts.wrap === false ? false : prompt.shouldWrap(s));
   const outbound = wrapIt ? prompt.wrapFirst(text, {
     workspaceName: wsActive ? wsActive.name : null,
     workspacePath: wsActive ? wsActive.path : null,
     permissionMode
   }) : text;
-
+  const internal = !!opts.internal;
   const entry = {
-    id, sessionId: s.id, text, images: imgs, status: 'queued', reply: '', error: null,
+    id, sessionId: s.id, text: internal ? '[map]' : text, images: imgs,
+    status: 'queued', reply: '', error: null,
     startedAt: Date.now(), finishedAt: null, verifying: false, attachFailed: false,
-    provider: active.id, edits: null
+    provider: active.id, edits: null, internal
   };
-  s.tasks.push(entry); s.updatedAt = Date.now();
-  if (s.title === 'New chat' && text) { s.title = deriveTitle(text); broadcast('session', { kind: 'updated', session: sessionSummary(s) }); }
-  try { memory.appendTranscript(s.id, { role: 'user', text, images: imgs.length, provider: active.id }); } catch (_) {}
+  if (!internal) s.tasks.push(entry);
+  s.updatedAt = Date.now();
+  if (!internal && s.title === 'New chat' && text) { s.title = deriveTitle(text); broadcast('session', { kind: 'updated', session: sessionSummary(s) }); }
+  if (!internal) { try { memory.appendTranscript(s.id, { role: 'user', text, images: imgs.length, provider: active.id }); } catch (_) {} }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       const p = pending.get(id); if (!p) return;
@@ -111,13 +112,13 @@ function enqueueTask(text, images, sessionId) {
       if (runningTaskId === id) runningTaskId = null;
       s.updatedAt = Date.now();
       console.log('[task ' + id + '] TIMEOUT');
-      broadcast('task', { id, sessionId: s.id, status: 'timeout', text });
+      if (!internal) broadcast('task', { id, sessionId: s.id, status: 'timeout', text });
       broadcast('session', { kind: 'updated', session: sessionSummary(s) });
       reject(new Error('timeout'));
     }, TASK_TIMEOUT_MS);
-    pending.set(id, { resolve, reject, timer, text, entry, session: s });
-    queue.push({ id, text: outbound, displayText: text, images: imgs, sessionId: s.id, freshContext, provider: active.id, enqueuedAt: Date.now(), wrapIt });
-    broadcast('task', { id, sessionId: s.id, status: 'queued', text, images: imgs, startedAt: entry.startedAt, provider: active.id });
+    pending.set(id, { resolve, reject, timer, text, entry, session: s, internal });
+    queue.push({ id, text: outbound, displayText: text, images: imgs, sessionId: s.id, freshContext, provider: active.id, enqueuedAt: Date.now(), wrapIt, internal });
+    if (!internal) broadcast('task', { id, sessionId: s.id, status: 'queued', text, images: imgs, startedAt: entry.startedAt, provider: active.id });
     broadcast('session', { kind: 'updated', session: sessionSummary(s) });
   });
 }
@@ -127,15 +128,20 @@ function takeNextTask() {
   const p = pending.get(task.id);
   if (p) {
     p.entry.status = 'running'; p.entry.startedAt = Date.now();
-    broadcast('task', { id: task.id, sessionId: task.sessionId, status: 'running', text: task.displayText || task.text, images: task.images, startedAt: p.entry.startedAt, provider: task.provider });
+    if (!task.internal) broadcast('task', { id: task.id, sessionId: task.sessionId, status: 'running', text: task.displayText || task.text, images: task.images, startedAt: p.entry.startedAt, provider: task.provider });
     if (p.session) broadcast('session', { kind: 'updated', session: sessionSummary(p.session) });
   }
   runningTaskId = task.id;
   return task;
 }
 
-function deliverStream(id, text) { const p = pending.get(id); if (!p) return false; p.entry.reply = text; broadcastStream(id, text); return true; }
-function deliverVerify(id, on) { const p = pending.get(id); if (!p) return false; p.entry.verifying = !!on; broadcast('verify', { id, on: !!on }); return true; }
+function deliverStream(id, text) {
+  const p = pending.get(id); if (!p) return false;
+  p.entry.reply = text;
+  if (!p.internal) broadcastStream(id, edits.cleanReplyText(text));
+  return true;
+}
+function deliverVerify(id, on) { const p = pending.get(id); if (!p) return false; p.entry.verifying = !!on; if (!p.internal) broadcast('verify', { id, on: !!on }); return true; }
 
 function deliverResult(id, payload) {
   const p = pending.get(id); if (!p) return false;
@@ -143,11 +149,11 @@ function deliverResult(id, payload) {
   p.entry.finishedAt = Date.now(); p.entry.verifying = false;
   if (runningTaskId === id) runningTaskId = null;
   if (p.session) p.session.updatedAt = Date.now();
-  try { memory.appendTranscript(p.entry.sessionId, { role: 'assistant', text: payload.reply || '', error: payload.error || null, ok: !!payload.ok, provider: p.entry.provider || null }); } catch (_) {}
+  if (!p.internal) { try { memory.appendTranscript(p.entry.sessionId, { role: 'assistant', text: payload.reply || '', error: payload.error || null, ok: !!payload.ok, provider: p.entry.provider || null }); } catch (_) {} }
 
   if (cancel.isCancelled(id)) {
     p.entry.status = 'cancelled'; p.entry.error = 'cancelled';
-    broadcast('task', { id, sessionId: p.entry.sessionId, status: 'cancelled', text: p.text, finishedAt: p.entry.finishedAt });
+    if (!p.internal) broadcast('task', { id, sessionId: p.entry.sessionId, status: 'cancelled', text: p.text, finishedAt: p.entry.finishedAt });
     cancel.clear(id);
     p.reject(new Error('cancelled'));
     if (p.session) broadcast('session', { kind: 'updated', session: sessionSummary(p.session) });
@@ -157,12 +163,10 @@ function deliverResult(id, payload) {
   if (payload.ok) {
     p.entry.status = 'ok'; p.entry.reply = payload.reply || ''; p.entry.attachFailed = !!payload.attachFailed;
 
-    // Parse directives and strip them from the display text.
     let parsedEdits = [];
     try { parsedEdits = edits.parse(payload.reply || ''); } catch (_) {}
     p.entry.edits = parsedEdits.length ? parsedEdits.map((e, idx) => ({ idx, kind: e.kind, path: e.path, summary: edits.describe(e), status: 'pending' })) : null;
 
-    // Auto-apply in Auto mode.
     if (parsedEdits.length && permissionMode === 'auto' && config.getActiveWorkspace()) {
       try {
         const results = apply.applyAll(parsedEdits);
@@ -170,17 +174,18 @@ function deliverResult(id, payload) {
       } catch (e) {}
     }
 
-    const displayReply = edits.stripForDisplay(payload.reply || '');
+    let displayReply = edits.stripForDisplay(payload.reply || '');
+    displayReply = edits.cleanReplyText(displayReply);
 
     provider.recordSuccess(p.entry.provider);
-    console.log('[task ' + id + '] ok (' + parsedEdits.length + ' edits)');
-    broadcast('task', { id, sessionId: p.entry.sessionId, status: 'ok', text: p.text, reply: displayReply, edits: p.entry.edits, attachFailed: !!payload.attachFailed, finishedAt: p.entry.finishedAt, durationMs: p.entry.finishedAt - p.entry.startedAt, provider: p.entry.provider });
+    console.log('[task ' + id + '] ok (' + parsedEdits.length + ' edits)' + (p.internal ? ' [internal]' : ''));
+    if (!p.internal) broadcast('task', { id, sessionId: p.entry.sessionId, status: 'ok', text: p.text, reply: displayReply, edits: p.entry.edits, attachFailed: !!payload.attachFailed, finishedAt: p.entry.finishedAt, durationMs: p.entry.finishedAt - p.entry.startedAt, provider: p.entry.provider });
     p.resolve(displayReply);
   } else {
     p.entry.status = 'error'; p.entry.error = payload.error || 'error';
-    console.log('[task ' + id + '] error: ' + payload.error);
+    console.log('[task ' + id + '] error: ' + payload.error + (p.internal ? ' [internal]' : ''));
     const failed = provider.recordFailure(p.entry.provider);
-    broadcast('task', { id, sessionId: p.entry.sessionId, status: 'error', text: p.text, error: payload.error, finishedAt: p.entry.finishedAt, provider: p.entry.provider });
+    if (!p.internal) broadcast('task', { id, sessionId: p.entry.sessionId, status: 'error', text: p.text, error: payload.error, finishedAt: p.entry.finishedAt, provider: p.entry.provider });
     if (failed >= 2) {
       const next = provider.maybeAutoSwitch(p.entry.provider);
       if (next) { broadcast('provider', { active: next }); broadcast('toast', { kind: 'info', text: 'Auto-switched to ' + next.label }); }
@@ -222,10 +227,40 @@ const server = http.createServer(async (req, res) => {
     if (qi >= 0) {
       const dropped = queue.splice(qi, 1)[0];
       const p2 = pending.get(dropped.id);
-      if (p2) { clearTimeout(p2.timer); pending.delete(dropped.id); p2.entry.status = 'cancelled'; p2.entry.finishedAt = Date.now(); broadcast('task', { id: dropped.id, sessionId: dropped.sessionId, status: 'cancelled', text: dropped.displayText || dropped.text, finishedAt: p2.entry.finishedAt }); p2.reject(new Error('cancelled')); }
+      if (p2) { clearTimeout(p2.timer); pending.delete(dropped.id); p2.entry.status = 'cancelled'; p2.entry.finishedAt = Date.now(); if (!dropped.internal) broadcast('task', { id: dropped.id, sessionId: dropped.sessionId, status: 'cancelled', text: dropped.displayText || dropped.text, finishedAt: p2.entry.finishedAt }); p2.reject(new Error('cancelled')); }
     }
     broadcast('cancel', { id });
     return json(res, 200, { ok: true });
+  }
+
+  if (req.method === 'POST' && p === '/workspace/map') {
+    if (!workspace.getRoot()) return json(res, 200, { ok: false, reason: 'no-workspace' });
+    if (mapTaskId != null && pending.has(mapTaskId)) {
+      return json(res, 200, { ok: false, reason: 'already-running', taskId: mapTaskId });
+    }
+    let promptText;
+    try { promptText = projectmap.buildPrompt(); }
+    catch (e) { return json(res, 200, { ok: false, reason: String(e.message || e) }); }
+    broadcast('toast', { kind: 'info', text: 'Generating project map…' });
+    enqueueTask(promptText, [], null, { internal: true, wrap: true })
+      .then((reply) => {
+        try {
+          const body = projectmap.writeProjectMap(reply || '');
+          broadcast('memory', memory.memorySnapshot());
+          broadcast('toast', { kind: 'info', text: 'Project map written (' + body.length + ' bytes)' });
+        } catch (e) {
+          broadcast('toast', { kind: 'error', text: 'Map write failed: ' + String(e.message || e) });
+        }
+        mapTaskId = null;
+      })
+      .catch((err) => {
+        broadcast('toast', { kind: 'error', text: 'Map generation failed: ' + (err && err.message || err) });
+        mapTaskId = null;
+      });
+    let newest = 0;
+    for (const id of pending.keys()) { if (id > newest) newest = id; }
+    mapTaskId = newest;
+    return json(res, 200, { ok: true, taskId: mapTaskId });
   }
 
   if (req.method === 'GET' && p === '/memory') return json(res, 200, { snapshot: memory.memorySnapshot() });
@@ -248,7 +283,7 @@ const server = http.createServer(async (req, res) => {
     const active = ensureDefaultSession();
     for (const h of active.tasks) {
       res.write('event: task\ndata: ' + JSON.stringify({ ...taskEntrySummary(h), sessionId: active.id }) + '\n\n');
-      if (h.reply) res.write('event: stream\ndata: ' + JSON.stringify({ id: h.id, text: h.reply }) + '\n\n');
+      if (h.reply) res.write('event: stream\ndata: ' + JSON.stringify({ id: h.id, text: edits.cleanReplyText(h.reply) }) + '\n\n');
     }
     req.on('close', () => listeners.delete(res));
     return;
@@ -257,14 +292,14 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && p === '/sessions') return json(res, 200, { sessions: allSessionSummaries(), activeId: defaultSessionId });
   if (req.method === 'POST' && p === '/sessions/new') { let s = (defaultSessionId && sessions.get(defaultSessionId)) || null; if (!s || s.tasks.length > 0) s = findEmptySession(); if (!s) s = createSession('New chat'); defaultSessionId = s.id; broadcast('sessions', { sessions: allSessionSummaries(), activeId: defaultSessionId }); return json(res, 200, { session: sessionSummary(s) }); }
   if (req.method === 'POST' && p === '/sessions/activate') { const body = await readBody(req); let parsed; try { parsed = JSON.parse(body); } catch { return json(res, 400, { error: 'bad-json' }); } const s = sessions.get(String(parsed.id)); if (!s) return json(res, 404, { error: 'not-found' }); defaultSessionId = s.id; broadcast('sessions', { sessions: allSessionSummaries(), activeId: defaultSessionId }); return json(res, 200, { session: sessionSummary(s) }); }
-  if (req.method === 'GET' && p.startsWith('/sessions/') && p.endsWith('/tasks')) { const id = p.slice('/sessions/'.length, -'/tasks'.length); const s = sessions.get(id); if (!s) return json(res, 404, { error: 'not-found' }); return json(res, 200, { session: sessionSummary(s), tasks: s.tasks.map(taskEntrySummary) }); }
+  if (req.method === 'GET' && p.startsWith('/sessions/') && p.endsWith('/tasks')) { const id = p.slice('/sessions/'.length, -'/tasks'.length); const s = sessions.get(id); if (!s) return json(res, 404, { error: 'not-found' }); return json(res, 200, { session: sessionSummary(s), tasks: s.tasks.map((h) => ({ ...taskEntrySummary(h), reply: h.reply ? edits.cleanReplyText(h.reply) : '' })) }); }
   if (req.method === 'DELETE' && p.startsWith('/sessions/')) { const id = p.slice('/sessions/'.length); const s = sessions.get(id); if (!s) return json(res, 404, { error: 'not-found' }); sessions.delete(id); if (defaultSessionId === id) { defaultSessionId = null; ensureDefaultSession(); } broadcast('sessions', { sessions: allSessionSummaries(), activeId: defaultSessionId }); return json(res, 200, { ok: true }); }
 
   if (req.method === 'GET' && p === '/work') { const task = takeNextTask(); if (!task) { res.writeHead(204); return res.end(); } return json(res, 200, task); }
   if (req.method === 'POST' && p === '/stream') { const body = await readBody(req); let parsed; try { parsed = JSON.parse(body); } catch { return json(res, 400, { error: 'bad-json' }); } const ok = deliverStream(parsed.id, String(parsed.text || '')); return json(res, ok ? 200 : 404, { ok }); }
   if (req.method === 'POST' && p === '/verify') { const body = await readBody(req); let parsed; try { parsed = JSON.parse(body); } catch { return json(res, 400, { error: 'bad-json' }); } const ok = deliverVerify(parsed.id, !!parsed.on); return json(res, ok ? 200 : 404, { ok }); }
   if (req.method === 'POST' && p === '/result') { const body = await readBody(req); let parsed; try { parsed = JSON.parse(body); } catch { return json(res, 400, { error: 'bad-json' }); } const ok = deliverResult(parsed.id, parsed); return json(res, ok ? 200 : 404, { ok }); }
-  if (req.method === 'POST' && p === '/heartbeat') { const body = await readBody(req); try { lastHeartbeatMeta = JSON.parse(body || '{}'); } catch { lastHeartbeatMeta = {}; } lastHeartbeat = Date.now(); broadcast('status', { connected: true, meta: lastHeartbeatMeta }); return json(res, 200, { ok: true }); }
+  if (req.method === 'POST' && p === '/heartbeat') { const body = await readBody(req); lastHeartbeatMeta = (() => { try { return JSON.parse(body || '{}'); } catch { return {}; } })(); lastHeartbeat = Date.now(); broadcast('status', { connected: true, meta: lastHeartbeatMeta }); return json(res, 200, { ok: true }); }
   if (req.method === 'POST' && p === '/task') { const body = await readBody(req); let parsed; try { parsed = JSON.parse(body); } catch { return json(res, 400, { error: 'bad-json' }); } const text = (parsed && parsed.text || '').trim(); const images = (parsed && parsed.images) || []; const sessionId = parsed && parsed.sessionId || defaultSessionId; if (!text && (!images || !images.length)) return json(res, 400, { error: 'empty' }); enqueueTask(text, images, sessionId).then((reply) => json(res, 200, { ok: true, reply })).catch((err) => json(res, 500, { ok: false, error: err.message })); return; }
 
   if (req.method === 'GET' && p === '/status') { return json(res, 200, { connected: Date.now() - lastHeartbeat < HEARTBEAT_FRESH_MS, lastHeartbeat, lastHeartbeatMeta, queueLength: queue.length, pendingCount: pending.size, runningTaskId, sessionCount: sessions.size, activeSessionId: defaultSessionId, workspace: config.getActiveWorkspace(), provider: provider.getActive(), permissionMode }); }

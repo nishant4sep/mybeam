@@ -1,5 +1,4 @@
-// ui/app.js — sessions + chat + workspace + memory + provider + permission + edits + cancel.
-// v4: sidebar closed by default, thinking shown until first chunk, fade-in final.
+// ui/app.js — v5: resizable file pane, empty-file placeholder, chrome cleaner applied on stream.
 (function () {
   'use strict';
   var app = document.getElementById('app-root');
@@ -26,6 +25,7 @@
   var wsInfo = document.getElementById('ws-info');
   var wsChange = document.getElementById('ws-change');
   var wsClose = document.getElementById('ws-close');
+  var wsMap = document.getElementById('ws-map');
   var filesSection = document.getElementById('files-section');
   var fileTree = document.getElementById('file-tree');
   var filesRefresh = document.getElementById('files-refresh');
@@ -45,6 +45,7 @@
   var filePaneCode = document.getElementById('file-pane-code');
   var filePaneClose = document.getElementById('file-pane-close');
   var filePaneCopy = document.getElementById('file-pane-copy');
+  var filePaneResize = document.getElementById('file-pane-resize');
 
   var turns = new Map();
   var pendingImages = [];
@@ -62,7 +63,7 @@
   var permissionMode = 'ask';
   var currentRunningId = null;
 
-  // ---- sidebar state (persisted) ----
+  // ---- sidebar state ----
   var SIDEBAR_KEY = 'mybeam.sidebarCollapsed';
   function applySidebarState() {
     var stored = null;
@@ -76,8 +77,42 @@
   }
   applySidebarState();
 
+  // ---- file pane width ----
+  var PANE_KEY = 'mybeam.filePaneW';
+  function applyPaneWidth(w) {
+    var clamped = Math.max(280, Math.min(w, Math.floor(window.innerWidth * 0.85)));
+    document.documentElement.style.setProperty('--file-pane-w', clamped + 'px');
+    try { localStorage.setItem(PANE_KEY, String(clamped)); } catch (_) {}
+  }
+  try {
+    var storedW = parseInt(localStorage.getItem(PANE_KEY) || '0', 10);
+    if (storedW) applyPaneWidth(storedW);
+  } catch (_) {}
+  (function attachResize() {
+    if (!filePaneResize) return;
+    var dragging = false;
+    var startX = 0, startW = 0;
+    filePaneResize.addEventListener('mousedown', function (ev) {
+      dragging = true;
+      filePaneResize.classList.add('dragging');
+      startX = ev.clientX;
+      startW = filePane.getBoundingClientRect().width;
+      ev.preventDefault();
+    });
+    window.addEventListener('mousemove', function (ev) {
+      if (!dragging) return;
+      var delta = startX - ev.clientX; // dragging left increases width
+      applyPaneWidth(startW + delta);
+    });
+    window.addEventListener('mouseup', function () {
+      if (!dragging) return;
+      dragging = false;
+      filePaneResize.classList.remove('dragging');
+    });
+  })();
+
   var toastTimer = null;
-  function toast(msg) { toastEl.textContent = msg; toastEl.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 2200); }
+  function toast(msg) { toastEl.textContent = msg; toastEl.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 2400); }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function ensureEmptyGone() { if (empty && empty.parentElement) empty.remove(); }
   function fmtMs(ms) { if (ms == null) return ''; if (ms < 1000) return ms + ' ms'; return (ms/1000).toFixed(2) + ' s'; }
@@ -161,17 +196,51 @@
     return frow;
   }
   async function openFile(relPath) { try { const res = await fetch('/workspace/file?path=' + encodeURIComponent(relPath)); const data = await res.json(); if (!data.ok) return toast('Cannot open: ' + (data.reason || 'unknown')); showFilePane(data.file); Array.from(fileTree.querySelectorAll('.tree-row.active')).forEach(function (r) { r.classList.remove('active'); }); var row = fileTree.querySelector('.tree-row[data-path="' + cssEscape(relPath) + '"]'); if (row) row.classList.add('active'); } catch (e) { toast('Could not open file: ' + e.message); } }
-  function showFilePane(file) { activeFilePath = file.path; activeFileContent = file.content || ''; filePaneName.textContent = file.path.split('/').pop(); filePaneMeta.textContent = fmtSize(file.size) + (file.mtime ? '  ·  ' + new Date(file.mtime).toLocaleTimeString() : ''); var ext = (file.path.match(/\.[^.]+$/) || [''])[0].replace('.', '').toLowerCase() || 'text'; filePaneLang.textContent = ext; var lines = (file.content || '').split('\n'); var nums = ''; for (var i = 1; i <= lines.length; i++) nums += i + '\n'; filePaneGutter.textContent = nums; filePaneCode.innerHTML = highlight(file.content || '', ext); filePane.hidden = false; app.classList.add('file-open'); filePaneCopy.classList.remove('ok'); }
+  function showFilePane(file) {
+    activeFilePath = file.path; activeFileContent = file.content || '';
+    filePaneName.textContent = file.path.split('/').pop();
+    filePaneMeta.textContent = fmtSize(file.size) + (file.mtime ? '  ·  ' + new Date(file.mtime).toLocaleTimeString() : '');
+    var ext = (file.path.match(/\.[^.]+$/) || [''])[0].replace('.', '').toLowerCase() || 'text';
+    filePaneLang.textContent = ext;
+    if (!activeFileContent.trim()) {
+      filePaneGutter.textContent = '';
+      filePaneCode.innerHTML = '';
+      var body = filePane.querySelector('.cb-body');
+      if (body) {
+        var existing = body.querySelector('.file-empty');
+        if (!existing) {
+          var fe = el('div', 'file-empty', 'This file is empty.');
+          body.appendChild(fe);
+        }
+      }
+    } else {
+      var fe2 = filePane.querySelector('.file-empty'); if (fe2) fe2.remove();
+      var lines = activeFileContent.split('\n'); var nums = ''; for (var i = 1; i <= lines.length; i++) nums += i + '\n';
+      filePaneGutter.textContent = nums;
+      filePaneCode.innerHTML = highlight(activeFileContent, ext);
+    }
+    filePane.hidden = false; app.classList.add('file-open'); filePaneCopy.classList.remove('ok');
+  }
   function closeFilePane() { filePane.hidden = true; app.classList.remove('file-open'); activeFilePath = null; activeFileContent = ''; }
   filePaneClose.addEventListener('click', closeFilePane);
   filePaneCopy.addEventListener('click', function () { var done = function () { filePaneCopy.classList.add('ok'); toast('Copied'); setTimeout(function () { filePaneCopy.classList.remove('ok'); }, 1500); }; if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(activeFileContent).then(done).catch(function (e) { toast('Copy failed: ' + e.message); }); else { var ta = document.createElement('textarea'); ta.value = activeFileContent; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch (e) { toast('Copy failed'); } ta.remove(); } });
   async function refreshWorkspace() { try { const r = await fetch('/workspace'); const snap = await r.json(); applyWorkspaceSnapshot(snap); } catch (e) { toast('Could not refresh workspace'); } }
   async function refreshMemory() { try { const r = await fetch('/memory'); const data = await r.json(); applyMemorySnapshot(data.snapshot); } catch (e) { toast('Could not refresh memory'); } }
-  function applyMemorySnapshot(snap) { memoryBody.innerHTML = ''; if (!snap) return; var labels = ['CONTEXT.md', 'PROJECT_MAP.md', 'FILES.md', 'DECISIONS.md', 'CHANGES.md']; var any = false; labels.forEach(function (name) { var content = snap[name]; var sec = el('div', 'memory-section'); sec.appendChild(el('h4', null, name.replace('.md',''))); if (content && content.trim()) { var pre = document.createElement('pre'); pre.textContent = content.trim(); sec.appendChild(pre); any = true; } else sec.appendChild(el('div', 'memory-empty', '(empty)')); memoryBody.appendChild(sec); }); if (!any) memoryBody.appendChild(el('div', 'memory-empty', 'Nothing recorded yet — send a message to start.')); }
+  function applyMemorySnapshot(snap) { memoryBody.innerHTML = ''; if (!snap) return; var labels = ['PROJECT_MAP.md', 'FILES.md', 'DECISIONS.md', 'CHANGES.md']; var any = false; labels.forEach(function (name) { var content = snap[name]; var sec = el('div', 'memory-section'); sec.appendChild(el('h4', null, name.replace('.md',''))); if (content && content.trim()) { var pre = document.createElement('pre'); pre.textContent = content.trim(); sec.appendChild(pre); any = true; } else sec.appendChild(el('div', 'memory-empty', '(empty)')); memoryBody.appendChild(sec); }); if (!any) memoryBody.appendChild(el('div', 'memory-empty', 'Nothing recorded yet — send a message or generate a map.')); }
   async function pickWorkspace() { toast('Opening folder dialog…'); try { const r = await fetch('/workspace/pick', { method: 'POST' }); const data = await r.json(); if (data.ok) { applyWorkspaceSnapshot(data.snapshot); toast('Workspace: ' + (data.workspace && data.workspace.name || 'set')); } else if (data.reason === 'cancelled') { /* silent */ } else { var manual = prompt('Folder dialog unavailable (' + (data.reason || 'unknown') + ').\nPaste the full path to a folder:'); if (manual) setWorkspacePath(manual.trim()); } } catch (e) { var m2 = prompt('Could not open folder dialog. Paste a full path:'); if (m2) setWorkspacePath(m2.trim()); } }
   async function setWorkspacePath(p) { try { const r = await fetch('/workspace/set', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: p }) }); const data = await r.json(); if (data.ok) { applyWorkspaceSnapshot(data.snapshot); toast('Workspace set'); } else toast('Could not set workspace: ' + (data.reason || 'unknown')); } catch (e) { toast('Could not set workspace'); } }
   async function closeWorkspace() { try { await fetch('/workspace', { method: 'DELETE' }); applyWorkspaceSnapshot({ active: null, tree: null }); applyMemorySnapshot(null); toast('Workspace closed'); } catch (e) { toast('Could not close workspace'); } }
+  async function generateMap() {
+    if (!activeWorkspace) { toast('Open a workspace first'); return; }
+    toast('Generating project map…');
+    try {
+      const r = await fetch('/workspace/map', { method: 'POST' });
+      const d = await r.json();
+      if (!d.ok) toast('Could not start: ' + (d.reason || 'unknown'));
+    } catch (e) { toast('Could not start map: ' + e.message); }
+  }
   wsOpen.addEventListener('click', pickWorkspace); wsChange.addEventListener('click', pickWorkspace); wsClose.addEventListener('click', closeWorkspace);
+  if (wsMap) wsMap.addEventListener('click', generateMap);
   filesRefresh.addEventListener('click', refreshWorkspace); memoryRefresh.addEventListener('click', refreshMemory);
 
   function renderSidebar() {
@@ -325,7 +394,6 @@
     if (t.waiting && t.waiting.parentElement) { t.waiting.remove(); t.waiting = null; }
     if (t.thinking && t.thinking.parentElement) { t.thinking.remove(); t.thinking = null; }
     t.verifying = false; t.currentText = text || ''; t.state = 'ok';
-    // Fade out, re-render as markdown, fade in.
     var applyFinal = function () {
       t.botBubble.classList.add('md');
       renderMarkdown(t.botBubble, text || '');
